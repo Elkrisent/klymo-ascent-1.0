@@ -1,27 +1,35 @@
 import os
 import sys
+
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, '..'))
+WORKSPACE_ROOT = os.path.abspath(os.path.join(PROJECT_ROOT, '..'))
+SWINIR_MODELS = os.path.join(WORKSPACE_ROOT, 'SwinIR', 'models')
+
+for _p in (PROJECT_ROOT, WORKSPACE_ROOT, SWINIR_MODELS):
+    if _p not in sys.path and os.path.isdir(_p):
+        sys.path.insert(0, _p)
+
 import torch
 import torch.nn as nn
 
-# Resolve SwinIR path relative to THIS file's location
-# so it works no matter what directory you run from
-_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_THIS_DIR, '..', 'SwinIR', 'models'))
-
-from network_swinir import SwinIR
+try:
+    from SwinIR.models.network_swinir import SwinIR
+except ModuleNotFoundError:
+    from network_swinir import SwinIR
 
 
 class SatelliteSwinIR(nn.Module):
     """
     SwinIR adapted for satellite imagery.
     """
-    def __init__(self, scale=4, pretrained_path=None):
-        super(SatelliteSwinIR, self).__init__()
+    def __init__(self, scale=4):
+        super().__init__()
 
         self.model = SwinIR(
             upscale=scale,
             in_chans=3,
-            img_size=128,          # Full size for T4 GPU
+            img_size=64,          # ✅ MUST match patch_size
             window_size=8,
             img_range=1.0,
             depths=[6, 6, 6, 6, 6, 6],
@@ -31,24 +39,6 @@ class SatelliteSwinIR(nn.Module):
             upsampler='pixelshuffle',
             resi_connection='1conv'
         )
-
-        if pretrained_path and os.path.exists(pretrained_path):
-            self.load_pretrained(pretrained_path)
-
-    def load_pretrained(self, path):
-        print(f"Loading pretrained weights from {path}")
-        pretrained_dict = torch.load(path, map_location='cpu')['params']
-
-        model_dict = self.model.state_dict()
-        # Only load weights that match in name AND shape
-        pretrained_dict = {
-            k: v for k, v in pretrained_dict.items()
-            if k in model_dict and v.shape == model_dict[k].shape
-        }
-
-        model_dict.update(pretrained_dict)
-        self.model.load_state_dict(model_dict, strict=False)
-        print(f"Loaded {len(pretrained_dict)}/{len(model_dict)} layers")
 
     def forward(self, x):
         return self.model(x)
