@@ -1,65 +1,42 @@
 import os
-import sys
-_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, '..'))
-sys.path.insert(0, PROJECT_ROOT)
 import torch
-import torch.nn as nn
-from SwinIR.models.network_swinir import SwinIR
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Subset
+from sklearn.model_selection import train_test_split
 
+from dataset import SatelliteSRDataset
+from utils.metrics import calculate_psnr, calculate_ssim
 
-class SatelliteSwinIR(nn.Module):
-    """
-    SwinIR adapted for satellite imagery.
-    """
-    def __init__(self, scale=4, pretrained_path=None):
-        super().__init__()
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        self.model = SwinIR(
-            upscale=scale,
-            in_chans=3,
-            img_size=64,          # Matches your 64×64 patch training
-            window_size=8,
-            img_range=1.0,
-            depths=[6, 6, 6, 6, 6, 6],
-            embed_dim=180,
-            num_heads=[6, 6, 6, 6, 6, 6],
-            mlp_ratio=2,
-            upsampler='pixelshuffle',
-            resi_connection='1conv'
-        )
+# --- same split logic as train_swinir.py (random_state=42 keeps it identical) ---
+hr_dir = os.path.join(os.path.dirname(__file__), 'worldstrat_processed', 'HR_8bit')
 
-        if pretrained_path and os.path.exists(pretrained_path):
-            self.load_pretrained(pretrained_path)
+dataset = SatelliteSRDataset(
+    hr_dir=hr_dir,
+    lr_patch_size=64,  # Full size to match training
+    scale=4
+)
 
-    def load_pretrained(self, path):
-        print(f"Loading pretrained weights from {path}")
-        pretrained_dict = torch.load(path, map_location='cpu')['params']
+indices = list(range(len(dataset)))
+_, val_idx = train_test_split(indices, test_size=0.2, random_state=42)
 
-        model_dict = self.model.state_dict()
-        # Only load weights that match in name AND shape
-        pretrained_dict = {
-            k: v for k, v in pretrained_dict.items()
-            if k in model_dict and v.shape == model_dict[k].shape
-        }
+val_loader = DataLoader(
+    Subset(dataset, val_idx),
+    batch_size=4,
+    shuffle=False,
+    num_workers=0
+)
 
-        model_dict.update(pretrained_dict)
-        self.model.load_state_dict(model_dict, strict=False)
-        print(f"Loaded {len(pretrained_dict)}/{len(model_dict)} layers")
+# --- Evaluate bicubic ---
+psnr_total = 0
+ssim_total = 0
 
-    def forward(self, x):
-        return self.model(x)
+for lr_img, hr_img in val_loader:
+    lr_img, hr_img = lr_img.to(device), hr_img.to(device)
+    sr_bicubic = F.interpolate(lr_img, scale_factor=4, mode='bicubic', align_corners=False)
+    psnr_total += calculate_psnr(sr_bicubic, hr_img)
+    ssim_total += calculate_ssim(sr_bicubic, hr_img)
 
-
-# --- Quick smoke test ---
-if __name__ == "__main__":
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    # pretrained .pth lives inside SwinIR/model_zoo/
-    pretrained = os.path.join(_THIS_DIR, '..', 'SwinIR', 'model_zoo',
-                              '001_classicalSR_DIV2K_s48w8_SwinIR-M_x4.pth')
-
-    model = SatelliteSwinIR(scale=4, pretrained_path=pretrained).to(device)
-    lr = torch.rand(1, 3, 64, 64).to(device)  # 64×64 to match img_size
-    sr = model(lr)
-    print(f"✅ SwinIR output shape: {sr.shape}")  # expect [1, 3, 256, 256]
+print(f"Bicubic PSNR: {psnr_total/len(val_loader):.2f} dB")
+print(f"Bicubic SSIM: {ssim_total/len(val_loader):.4f}")
