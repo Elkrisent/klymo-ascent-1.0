@@ -1,0 +1,17 @@
+# Data
+data/worldstrat/
+data/mystery_location/
+
+# Models
+checkpoints/
+*.pth
+
+# Python
+__pycache__/
+*.pyc
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
